@@ -1,0 +1,371 @@
+---
+title: "Assignment 2"
+author: "Social Networks Analysis - Master in Business Analytics & Big Data"
+date: "February 25th 2016"
+output: html_document
+---
+
+### Introduction
+
+Wikipedia is a free encyclopedia written collaboratively by volunteers around the world. A small part of Wikipedia contributors are administrators, who are users with access to additional technical features that aid in maintenance. In order for a user to become an administrator a Request for adminship (RfA) is issued and the Wikipedia community via a public discussion or a vote decides who to promote to adminship. Using a complete dump of Wikipedia page edit history (from January 3 2008) we extracted all administrator elections and vote history data. This gave us nearly 2,800 elections with around 100,000 total votes and about 7,000 users participating in the elections (either casting a vote or being voted on). Out of these 1,200 elections resulted in a successful promotion, while about 1,500 elections did not result in the promotion. About half of the votes in the dataset are by existing admins, while the other half comes from ordinary Wikipedia users.
+
+<span style="color:blue">
+The answers in every section, please code it in blue
+</span>
+
+
+### Assignment 2
+
+In this exercise, you will learn some advanced uses of the Igraph package, a powerful tool to analyze and visualize networks in R. This is an assignment with a smaller number of clues compared to the first assignment so you will have to be creative and think of different solutions.
+
+In this case, we have a big goal to get in this assignment:
+
+#### Sign prediction
+
+* Can we predict the sign of the votes depending on the structure?
+* Can we predict the sign of the votes depending on the previous information?
+* Can we measure the effect "the friend of my friend is my friend", "the friend of my enemy is my enemy" and "the enemy of my friend is my enemy"?
+
+It is useful to read and understand the next paper: http://cs.stanford.edu/people/jure/pubs/signs-www10.pdf
+
+In this scientific paper you will see the results the authors got when they analyzed the Wikipedia dataset. 
+
+### Link Sign Prediction (no temporal structure)
+
+In this exercise, we will try to predict the sign of votes. We will use a logistic regression for predicting this sign based on variables we can compute from our graph.
+
+In our first exercise, we will choose randomly 80% of the original edges (training dataset) and our goal is to create a predictive model for the rest 20% of the edges (test dataset). 
+
+```{r}
+#loading some libraries
+library(igraph)
+library(ggplot2)
+library(dplyr)
+library(plotrix)
+library(dplyr)
+library(GGally)
+```
+
+```{r}
+#setwd("~/2.IE/Term 2 - Winter/Social Network Analysis/Exercise2")
+setwd("/home/ab/Documents/MBD/social_network/data")
+# load raw data files
+metadata = read.csv("metadata.txt",sep=";",stringsAsFactors = F,header=F,quote="")
+# setting headers
+colnames(metadata)=c("user","nominator","deadline","result")
+head(metadata,10)
+```
+
+```{r}
+# load raw data files
+votings<-read.csv("votings.txt",sep=";",stringsAsFactors = F,header=F,quote="")
+# setting headers
+colnames(votings)<-c("user","candidate","datetime","vote")
+head(votings,10)
+
+set.seed(11)
+rand = sample(2, 114040, prob = c(0.8, 0.2), replace = T)
+votings$set = rand
+```
+
+```{r}
+#setting the original graph
+g<-as.matrix(votings)
+g<-graph_from_edgelist(g[,1:2])
+g<-set.edge.attribute(g,"vote",value=votings[,4])
+g<-set.edge.attribute(g,"timestamp",value=votings[,3])
+g<-set.edge.attribute(g,"set",value=votings[,5])
+summary(g)
+```
+
+
+```{r}
+# CHUNK 1: code to split the original datasets in two training_edges and test_edges
+
+# training_edges = E(g)[set == 1]
+# test_edges = E(g)[set == 2]
+
+#Two graphs with all the nodes but only the training and testing edges
+gtrain<-delete.edges(g,which(E(g)$set !=1))
+gtest<-delete.edges(g,which(E(g)$set !=2))
+
+#taking away nodes with zeroes in the voting assuming they are "neutral"
+gtrain<-delete.edges(gtrain, which(E(gtrain)$vote==0))
+gtest<-delete.edges(gtest,which(E(gtest)$vote==0))
+# summary(ge)
+# set.edge.attribute(training_edges)
+# str(training_edges)
+# edge.attributes(g)
+```
+
+Then, we must create the variables for each edge (both training and test ones). These are some mandatory variables but you can add more. If every link is composed by an origin u and a destination v:
+* In, out and total positive degree (degree involving only positive links) for both nodes.
+* In, out and total negative degree (degree involving only negative links) for both nodes.
+
+```{r}
+# CHUNK 2: code to create these variables for the edges.
+degree_in = degree(gtrain,v=V(gtrain), mode = "in")
+degree_out = degree(gtrain,v = V(gtrain), mode = "out")
+degree_all = degree(gtrain,v = V(gtrain), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtrainp<-delete.edges(gtrain,which(E(gtrain)$vote <0))
+degree_in_p = degree(gtrainp, mode = "in")
+degree_out_p = degree(gtrainp, mode = "out")
+degree_all_p = degree(gtrainp, mode = "all")
+
+#only negative edges and compute degree
+gtrainn<-delete.edges(gtrain,which(E(gtrain)$vote >0))
+degree_in_n = degree(gtrainn, mode = "in")
+degree_out_n = degree(gtrainn, mode = "out")
+degree_all_n = degree(gtrainn, mode = "all")
+
+#stupid check for positive + negative = total votes
+summary(gtrain)
+summary(gtrainp)
+summary(gtrainn)
+
+#set as new vertex attributes (for building the vertex data frame later)
+gtrain<-set.vertex.attribute(gtrain,"d_in_p",value=degree_in_p)
+gtrain<-set.vertex.attribute(gtrain,"d_out_p",value=degree_out_p)
+gtrain<-set.vertex.attribute(gtrain,"d_tot_p",value=degree_all_p)
+gtrain<-set.vertex.attribute(gtrain,"d_in_n",value=degree_in_n)
+gtrain<-set.vertex.attribute(gtrain,"d_out_n",value=degree_out_n)
+gtrain<-set.vertex.attribute(gtrain,"d_tot_n",value=degree_all_n)
+
+#creating a data frame to store name of each vertex plus the six degrees calculated
+Vdegrees<-matrix(data=NA,nrow=length(V(gtrain)),ncol=7)
+Vdegrees[,1]<-V(gtrain)$name
+Vdegrees[,2]<-V(gtrain)$d_in_p
+Vdegrees[,3]<-V(gtrain)$d_out_p
+Vdegrees[,4]<-V(gtrain)$d_tot_p
+Vdegrees[,5]<-V(gtrain)$d_in_n
+Vdegrees[,6]<-V(gtrain)$d_out_n
+Vdegrees[,7]<-V(gtrain)$d_tot_n
+colnames(Vdegrees)<-c("name", "d_in_p","d_out_p","d_tot_p","d_in_n","d_out_n","d_tot_n")
+Vdegrees<-as.data.frame(Vdegrees)
+#View(Vdegrees)
+
+#creating a data frame with the "origin" and "destination" link of each edge
+edgelist<-get.edgelist(gtrain)
+length(edgelist[,1])
+colnames(edgelist)<-c("origin","destination")
+edgelist<-as.data.frame(edgelist)
+#View(edgelist)
+
+#expanding the data frame to add the 6+6 degrees for origin and destination edges
+edgelist<-left_join(edgelist,Vdegrees,c("origin"="name"))
+edgelist<-left_join(edgelist,Vdegrees,c("destination"="name"))
+colnames(edgelist)<-c("origin", "destination","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+#assigning values of the data frame as edge properties
+gtrain<-set.edge.attribute(gtrain,"OinP",value=edgelist[,3])
+gtrain<-set.edge.attribute(gtrain,"OoutP",value=edgelist[,4])
+gtrain<-set.edge.attribute(gtrain,"OallP",value=edgelist[,5])
+gtrain<-set.edge.attribute(gtrain,"OinN",value=edgelist[,6])
+gtrain<-set.edge.attribute(gtrain,"OoutN",value=edgelist[,7])
+gtrain<-set.edge.attribute(gtrain,"OallN",value=edgelist[,8])
+gtrain<-set.edge.attribute(gtrain,"DinP",value=edgelist[,9])
+gtrain<-set.edge.attribute(gtrain,"DoutP",value=edgelist[,10])
+gtrain<-set.edge.attribute(gtrain,"DallP",value=edgelist[,11])
+gtrain<-set.edge.attribute(gtrain,"DinN",value=edgelist[,12])
+gtrain<-set.edge.attribute(gtrain,"DoutN",value=edgelist[,13])
+gtrain<-set.edge.attribute(gtrain,"DallN",value=edgelist[,14])
+
+#check the attributes have been correctly assigned
+summary(gtrain)
+
+```
+
+```{r}
+# CHUNK 2: same stuff, now for the test dataset
+
+degree_in = degree(gtest,v=V(gtest), mode = "in")
+degree_out = degree(gtest,v = V(gtest), mode = "out")
+degree_all = degree(gtest,v = V(gtest), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtestp<-delete.edges(gtest,which(E(gtest)$vote <0))
+degree_in_p = degree(gtestp, mode = "in")
+degree_out_p = degree(gtestp, mode = "out")
+degree_all_p = degree(gtestp, mode = "all")
+
+#only negative edges and compute degree
+gtestn<-delete.edges(gtest,which(E(gtest)$vote >0))
+degree_in_n = degree(gtestn, mode = "in")
+degree_out_n = degree(gtestn, mode = "out")
+degree_all_n = degree(gtestn, mode = "all")
+
+#stupid check for positive + negative = total votes
+# summary(gtest)
+# summary(gtrainp)
+# summary(gtrainn)
+
+#set new vertex attributes
+gtest<-set.vertex.attribute(gtest,"d_in_p",value=degree_in_p)
+gtest<-set.vertex.attribute(gtest,"d_out_p",value=degree_out_p)
+gtest<-set.vertex.attribute(gtest,"d_tot_p",value=degree_all_p)
+gtest<-set.vertex.attribute(gtest,"d_in_n",value=degree_in_n)
+gtest<-set.vertex.attribute(gtest,"d_out_n",value=degree_out_n)
+gtest<-set.vertex.attribute(gtest,"d_tot_n",value=degree_all_n)
+
+#creating a data frame to store name of each vertex plus the six degrees calculated
+Vdegrees<-matrix(data=NA,nrow=length(V(gtest)),ncol=7)
+Vdegrees[,1]<-V(gtest)$name
+Vdegrees[,2]<-V(gtest)$d_in_p
+Vdegrees[,3]<-V(gtest)$d_out_p
+Vdegrees[,4]<-V(gtest)$d_tot_p
+Vdegrees[,5]<-V(gtest)$d_in_n
+Vdegrees[,6]<-V(gtest)$d_out_n
+Vdegrees[,7]<-V(gtest)$d_tot_n
+colnames(Vdegrees)<-c("name", "d_in_p","d_out_p","d_tot_p","d_in_n","d_out_n","d_tot_n")
+Vdegrees<-as.data.frame(Vdegrees)
+#View(Vdegrees)
+
+#creating a data frame with the "origin" and "destination" link of each edge
+edgelist<-get.edgelist(gtest)
+length(edgelist[,1])
+colnames(edgelist)<-c("origin","destination")
+edgelist<-as.data.frame(edgelist)
+#View(edgelist)
+
+#expanding the data frame to add the 6+6 degrees for origin and destination edges
+edgelist<-left_join(edgelist,Vdegrees,c("origin"="name"))
+edgelist<-left_join(edgelist,Vdegrees,c("destination"="name"))
+colnames(edgelist)<-c("origin", "destination","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+#assigning values of the data frame as edge properties
+gtest<-set.edge.attribute(gtest,"OinP",value=edgelist[,3])
+gtest<-set.edge.attribute(gtest,"OoutP",value=edgelist[,4])
+gtest<-set.edge.attribute(gtest,"OallP",value=edgelist[,5])
+gtest<-set.edge.attribute(gtest,"OinN",value=edgelist[,6])
+gtest<-set.edge.attribute(gtest,"OoutN",value=edgelist[,7])
+gtest<-set.edge.attribute(gtest,"OallN",value=edgelist[,8])
+gtest<-set.edge.attribute(gtest,"DinP",value=edgelist[,9])
+gtest<-set.edge.attribute(gtest,"DoutP",value=edgelist[,10])
+gtest<-set.edge.attribute(gtest,"DallP",value=edgelist[,11])
+gtest<-set.edge.attribute(gtest,"DinN",value=edgelist[,12])
+gtest<-set.edge.attribute(gtest,"DoutN",value=edgelist[,13])
+gtest<-set.edge.attribute(gtest,"DallN",value=edgelist[,14])
+
+#check the attributes have been correctly assigned
+summary(gtest)
+```
+
+Finally, we build a logistic regression model with the training dataset and we evaluate it on the test dataset.
+
+```{r}
+# CHUNK 3: code to create the regression model and evaluate it on the test.
+
+
+#transforming the vertex list + attributes into a matrix (not sure if needed)
+#probably column 2 should be the target variable, as it is the destination of the vote
+trainE<-as.data.frame(get.edgelist(gtrain))
+trainE<-cbind(trainE,E(gtrain)$vote)
+trainE<-cbind(trainE,E(gtrain)$OinP)
+trainE<-cbind(trainE,E(gtrain)$OoutP)
+trainE<-cbind(trainE,E(gtrain)$OallP)
+trainE<-cbind(trainE,E(gtrain)$OinN)
+trainE<-cbind(trainE,E(gtrain)$OoutN)
+trainE<-cbind(trainE,E(gtrain)$OallN)
+trainE<-cbind(trainE,E(gtrain)$DinP)
+trainE<-cbind(trainE,E(gtrain)$DoutP)
+trainE<-cbind(trainE,E(gtrain)$DallP)
+trainE<-cbind(trainE,E(gtrain)$DinN)
+trainE<-cbind(trainE,E(gtrain)$DoutN)
+trainE<-cbind(trainE,E(gtrain)$DallN)
+colnames(trainE)<-c("origin", "destination","vote","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+#reassign values to vote to make it negatives as zeroes and positives as ones
+trainE$vote<-ifelse(trainE$vote<0,0,1)
+#obtain the model from the train dataset
+
+#ggpairs(trainE[4:9])
+head(trainE)
+head(trainE)
+
+model<- glm(data=trainE, family=binomial(logit), vote~ DinP + DoutP + DallP + DinN + DoutN + DallN + OinP + OoutP + OallP + OinN + OoutN + OallN)# . is to compute all variables against Y
+summary(model)
+anova(model, test="Chisq")
+
+### Get the probabilities
+model_pred = predict(model, type="response")
+
+### Assign them to the train dataset
+trainE$logods =model_pred
+
+###Assign a 1 value if the prob is > .5
+trainE$pred = ifelse(trainE$logods>.5,1,0)
+
+###Create a confusion matrix
+table(trainE$vote,trainE$pred)
+
+###Get some success measures
+table(trainE$vote,trainE$pred)[1,1] / sum(table(trainE$vote,trainE$pred)[,1]) *100 #True Negatives
+table(trainE$vote,trainE$pred)[2,2] / sum(table(trainE$vote,trainE$pred)[,2]) *100 #True Positives
+
+
+#DallP and DallN seem to add redundant information. Taking them away:
+model1<- glm(data=trainE, family=binomial, vote~ DinP + DoutP + DinN + DoutN)
+summary(model1)
+anova(model, test="Chisq")
+
+### Get the probabilities
+model_pred1 = predict(model1, type="response")
+
+### Assign them to the train dataset
+trainE$logods1 =model_pred1
+
+###Assign a 1 value if the prob is > .5
+trainE$pred1 = ifelse(trainE$logods1>.5,1,0)
+
+###Create a confusion matrix
+table(trainE$vote,trainE$pred1)
+
+###Get some success measures
+table(trainE$vote,trainE$pred1)[1,1] / sum(table(trainE$vote,trainE$pred1)[,1]) *100 #True Negatives
+table(trainE$vote,trainE$pred1)[2,2] / sum(table(trainE$vote,trainE$pred1)[,2]) *100 #True Positives
+
+
+```
+
+Analyze the weights of the regression provided by the model. Which variables are the most important ones to predict the sign??
+
+### Evaluating social hypothesis on the Wikipedia network.
+
+In this exercise we will try to evaluate whether these three sentences are statistically true in our dataset:
+
+* "The friend of my friend is my friend"
+* "The friend of my enemy is my enemy"
+* "The enemy of my friend is my enemy"
+
+In this exercise, we will consider all the links of the original dataset. The main goal is to check these affirmations considering both the sign of the links and the timestamp. 
+
+```{r}
+# CHUNK 4: create the code and visualizations you consider to evaluate these 3 affirmations
+```
+
+### Link Sign Prediction (temporal structure)
+
+In this exercise, we will try to predict the sign of votes again by using a logistic regression for predicting this sign based on variables we can compute from our graph but, now, we will have different datasets. We will select the training dataset by keeping the 80% of links ordered by time and the rest 20% of links will compose the test dataset.
+
+```{r}
+# CHUNK 5: create the new training and test datasets.
+```
+
+Again, you can create the same degree variables as in the first part of the assignment but now you have to use the knowledge you have got in the second one, that is, if you have observed that the phenomena "the friend of my friend is my friend" is present in the data then you must create some variables related to this fact to predict the sign of the votes.
+
+
+```{r}
+# CHUNK 6: create the new variables based on the knowledge of how votes spread on the network
+```
+
+Once you have all the variables created, you have to train a logistic regression model on the training dataset and evaluate it on the test dataset.
+
+```{r}
+#CHUNK 7: build the model and evaluate it on the test dataset.
+```
+
+Finally, analyze the importance of the variables in the model depending on the weights of the regression.
