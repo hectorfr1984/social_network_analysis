@@ -392,12 +392,84 @@ check_statements<-check_statements%>%
 View(check_statements)
 ```
 
+```{r}
+#Visualizations --> assign to edges
+#This part will also be useful for chunk6 --> assign properties to edges (done in chunk 5 for these properties)
+
+#the friend of my friend
+votings_pp <- triangles_g%>%
+  filter(statement=="pp")%>%
+  group_by(userA,userC)%>%
+  summarise(count=n())
+#the enemy of my friend
+votings_np <- triangles_g%>%
+  filter(statement=="np")%>%
+  group_by(userA,userC)%>%
+  summarise(count=n())
+#the friend of my enemy
+votings_pn <- triangles_g%>%
+  filter(statement=="pn")%>%
+  group_by(userA,userC)%>%
+  summarise(count=n())
+#the enemy of my enemy
+votings_nn <- triangles_g%>%
+  filter(statement=="nn")%>%
+  group_by(userA,userC)%>%
+  summarise(count=n())
+
+#add to votings as columns to then include them as properties of the edges
+#adding them
+votings2<-left_join(votings2,votings_pp,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_np,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_pn,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_nn,c("user"="userA","candidate"="userC"))
+#renaming columns
+colnames(votings2)<-c("user","candidate","datetime","vote", "set","countpp","countnp","countpn", "countnn")
+#votings2 data frame with additional information on the edges
+votings2$countpp[is.na(votings2$countpp)]<-0
+votings2$countnp[is.na(votings2$countnp)]<-0
+votings2$countpn[is.na(votings2$countpn)]<-0
+votings2$countnn[is.na(votings2$countnn)]<-0
+```
+
 ### Link Sign Prediction (temporal structure)
 
 In this exercise, we will try to predict the sign of votes again by using a logistic regression for predicting this sign based on variables we can compute from our graph but, now, we will have different datasets. We will select the training dataset by keeping the 80% of links ordered by time and the rest 20% of links will compose the test dataset.
 
 ```{r}
 # CHUNK 5: create the new training and test datasets.
+
+#NB! Knowing that I will work with the 3 new variables stated before, we will add them already in chunk 5 instead of in chunk 6
+
+#Arrange votings2 by timestamp 
+votings2<-votings2%>%
+  arrange(datetime)
+votings2$set[1:length(votings2$set)*0.8]<-1                         #first 80%: training set, set=1
+votings2$set[(length(votings2$set)*0.8+1):length(votings2$set)]<-2  #last 20%: test set, set=2
+
+#create graph assignning to edges the properties "vote", "timestamp", "set", "pp", "np", "pn" and "nn"
+votings2<-as.matrix(votings2)
+g2<-graph_from_edgelist(votings2[,1:2])
+g2<-set.edge.attribute(g2,"vote",value=votings2[,4])
+g2<-set.edge.attribute(g2,"timestamp",value=votings2[,3])
+g2<-set.edge.attribute(g2,"set",value=votings2[,5])
+g2<-set.edge.attribute(g2,"pp",value=votings2[,6])
+g2<-set.edge.attribute(g2,"np",value=votings2[,7])
+g2<-set.edge.attribute(g2,"pn",value=votings2[,8])
+g2<-set.edge.attribute(g2,"nn",value=votings2[,9])
+
+
+#Two graphs with all the nodes but only the training and testing edges
+gtrain2<-delete.edges(g2,which(E(g2)$set !=1))  #train data set
+gtest2<-delete.edges(g2,which(E(g2)$set !=2))   #test data set
+```
+
+```{r}
+#Checking if the spit looks OK
+summary(g2)
+summary(gtrain2)
+summary(gtest2)
+
 ```
 
 Again, you can create the same degree variables as in the first part of the assignment but now you have to use the knowledge you have got in the second one, that is, if you have observed that the phenomena "the friend of my friend is my friend" is present in the data then you must create some variables related to this fact to predict the sign of the votes.
@@ -405,6 +477,155 @@ Again, you can create the same degree variables as in the first part of the assi
 
 ```{r}
 # CHUNK 6: create the new variables based on the knowledge of how votes spread on the network
+
+#for the TRAIN data set
+degree_in = degree(gtrain2,v=V(gtrain2), mode = "in")
+degree_out = degree(gtrain2,v = V(gtrain2), mode = "out")
+degree_all = degree(gtrain2,v = V(gtrain2), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtrainp<-delete.edges(gtrain2,which(E(gtrain2)$vote <0))
+degree_in_p = degree(gtrainp, mode = "in")
+degree_out_p = degree(gtrainp, mode = "out")
+degree_all_p = degree(gtrainp, mode = "all")
+
+#only negative edges and compute degree
+gtrainn<-delete.edges(gtrain2,which(E(gtrain2)$vote >0))
+degree_in_n = degree(gtrainn, mode = "in")
+degree_out_n = degree(gtrainn, mode = "out")
+degree_all_n = degree(gtrainn, mode = "all")
+
+#stupid check for positive + negative = total votes
+# summary(gtrain2)
+# summary(gtrainp)
+# summary(gtrainn)
+
+#set as new vertex attributes (for building the vertex data frame later)
+gtrain2<-set.vertex.attribute(gtrain2,"d_in_p",value=degree_in_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_out_p",value=degree_out_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_tot_p",value=degree_all_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_in_n",value=degree_in_n)
+gtrain2<-set.vertex.attribute(gtrain2,"d_out_n",value=degree_out_n)
+gtrain2<-set.vertex.attribute(gtrain2,"d_tot_n",value=degree_all_n)
+
+#creating a data frame to store name of each vertex plus the six degrees calculated
+Vdegrees<-matrix(data=NA,nrow=length(V(gtrain2)),ncol=7)
+Vdegrees[,1]<-V(gtrain2)$name
+Vdegrees[,2]<-V(gtrain2)$d_in_p
+Vdegrees[,3]<-V(gtrain2)$d_out_p
+Vdegrees[,4]<-V(gtrain2)$d_tot_p
+Vdegrees[,5]<-V(gtrain2)$d_in_n
+Vdegrees[,6]<-V(gtrain2)$d_out_n
+Vdegrees[,7]<-V(gtrain2)$d_tot_n
+colnames(Vdegrees)<-c("name", "d_in_p","d_out_p","d_tot_p","d_in_n","d_out_n","d_tot_n")
+Vdegrees<-as.data.frame(Vdegrees)
+#View(Vdegrees)
+
+#creating a data frame with the "origin" and "destination" link of each edge
+edgelist<-get.edgelist(gtrain2)
+length(edgelist[,1])
+colnames(edgelist)<-c("origin","destination")
+edgelist<-as.data.frame(edgelist)
+#View(edgelist)
+
+#expanding the data frame to add the 6+6 degrees for origin and destination edges
+edgelist<-left_join(edgelist,Vdegrees,c("origin"="name"))
+edgelist<-left_join(edgelist,Vdegrees,c("destination"="name"))
+colnames(edgelist)<-c("origin", "destination","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+#assigning values of the data frame as edge properties
+gtrain2<-set.edge.attribute(gtrain2,"OinP",value=edgelist[,3])
+gtrain2<-set.edge.attribute(gtrain2,"OoutP",value=edgelist[,4])
+gtrain2<-set.edge.attribute(gtrain2,"OallP",value=edgelist[,5])
+gtrain2<-set.edge.attribute(gtrain2,"OinN",value=edgelist[,6])
+gtrain2<-set.edge.attribute(gtrain2,"OoutN",value=edgelist[,7])
+gtrain2<-set.edge.attribute(gtrain2,"OallN",value=edgelist[,8])
+gtrain2<-set.edge.attribute(gtrain2,"DinP",value=edgelist[,9])
+gtrain2<-set.edge.attribute(gtrain2,"DoutP",value=edgelist[,10])
+gtrain2<-set.edge.attribute(gtrain2,"DallP",value=edgelist[,11])
+gtrain2<-set.edge.attribute(gtrain2,"DinN",value=edgelist[,12])
+gtrain2<-set.edge.attribute(gtrain2,"DoutN",value=edgelist[,13])
+gtrain2<-set.edge.attribute(gtrain2,"DallN",value=edgelist[,14])
+
+#check the attributes have been correctly assigned
+summary(gtrain2)
+```
+
+```{r}
+# CHUNK 6: same stuff as chunk 2, now for the test dataset
+
+degree_in = degree(gtest2,v=V(gtest2), mode = "in")
+degree_out = degree(gtest2,v = V(gtest2), mode = "out")
+degree_all = degree(gtest2,v = V(gtest2), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtestp<-delete.edges(gtest2,which(E(gtest2)$vote <0))
+degree_in_p = degree(gtestp, mode = "in")
+degree_out_p = degree(gtestp, mode = "out")
+degree_all_p = degree(gtestp, mode = "all")
+
+#only negative edges and compute degree
+gtestn<-delete.edges(gtest2,which(E(gtest2)$vote >0))
+degree_in_n = degree(gtestn, mode = "in")
+degree_out_n = degree(gtestn, mode = "out")
+degree_all_n = degree(gtestn, mode = "all")
+
+#stupid check for positive + negative = total votes
+# summary(gtest2)
+# summary(gtrainp)
+# summary(gtrainn)
+
+#set new vertex attributes
+gtest2<-set.vertex.attribute(gtest2,"d_in_p",value=degree_in_p)
+gtest2<-set.vertex.attribute(gtest2,"d_out_p",value=degree_out_p)
+gtest2<-set.vertex.attribute(gtest2,"d_tot_p",value=degree_all_p)
+gtest2<-set.vertex.attribute(gtest2,"d_in_n",value=degree_in_n)
+gtest2<-set.vertex.attribute(gtest2,"d_out_n",value=degree_out_n)
+gtest2<-set.vertex.attribute(gtest2,"d_tot_n",value=degree_all_n)
+
+#creating a data frame to store name of each vertex plus the six degrees calculated
+Vdegrees<-matrix(data=NA,nrow=length(V(gtest2)),ncol=7)
+Vdegrees[,1]<-V(gtest2)$name
+Vdegrees[,2]<-V(gtest2)$d_in_p
+Vdegrees[,3]<-V(gtest2)$d_out_p
+Vdegrees[,4]<-V(gtest2)$d_tot_p
+Vdegrees[,5]<-V(gtest2)$d_in_n
+Vdegrees[,6]<-V(gtest2)$d_out_n
+Vdegrees[,7]<-V(gtest2)$d_tot_n
+colnames(Vdegrees)<-c("name", "d_in_p","d_out_p","d_tot_p","d_in_n","d_out_n","d_tot_n")
+Vdegrees<-as.data.frame(Vdegrees)
+#View(Vdegrees)
+
+#creating a data frame with the "origin" and "destination" link of each edge
+edgelist<-get.edgelist(gtest2)
+length(edgelist[,1])
+colnames(edgelist)<-c("origin","destination")
+edgelist<-as.data.frame(edgelist)
+#View(edgelist)
+
+#expanding the data frame to add the 6+6 degrees for origin and destination edges
+edgelist<-left_join(edgelist,Vdegrees,c("origin"="name"))
+edgelist<-left_join(edgelist,Vdegrees,c("destination"="name"))
+colnames(edgelist)<-c("origin", "destination","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+#assigning values of the data frame as edge properties
+gtest2<-set.edge.attribute(gtest2,"OinP",value=edgelist[,3])
+gtest2<-set.edge.attribute(gtest2,"OoutP",value=edgelist[,4])
+gtest2<-set.edge.attribute(gtest2,"OallP",value=edgelist[,5])
+gtest2<-set.edge.attribute(gtest2,"OinN",value=edgelist[,6])
+gtest2<-set.edge.attribute(gtest2,"OoutN",value=edgelist[,7])
+gtest2<-set.edge.attribute(gtest2,"OallN",value=edgelist[,8])
+gtest2<-set.edge.attribute(gtest2,"DinP",value=edgelist[,9])
+gtest2<-set.edge.attribute(gtest2,"DoutP",value=edgelist[,10])
+gtest2<-set.edge.attribute(gtest2,"DallP",value=edgelist[,11])
+gtest2<-set.edge.attribute(gtest2,"DinN",value=edgelist[,12])
+gtest2<-set.edge.attribute(gtest2,"DoutN",value=edgelist[,13])
+gtest2<-set.edge.attribute(gtest2,"DallN",value=edgelist[,14])
+
+#check the attributes have been correctly assigned
+summary(gtest2)
 ```
 
 Once you have all the variables created, you have to train a logistic regression model on the training dataset and evaluate it on the test dataset.
