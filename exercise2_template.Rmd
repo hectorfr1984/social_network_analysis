@@ -345,6 +345,51 @@ In this exercise, we will consider all the links of the original dataset. The ma
 
 ```{r}
 # CHUNK 4: create the code and visualizations you consider to evaluate these 3 affirmations
+
+#Doing a left join of "votings" with itself so I get A --> B and B --> C to get neighbourhood of length 2
+triangles_g<-left_join(votings,votings,c("candidate"="user"))
+
+#Now filter for A-->C, meaning that "C" has to appear in column 2 for voters "A"
+#create a new column concatenating names of A and C to compare with votings
+triangles_g$AtoC <- do.call(paste, c(triangles_g[c("user", "candidate.y")], sep = ""))
+#create same column in votings
+votings2<-votings
+votings2$Atoc<-do.call(paste, c(votings2[c("user", "candidate")], sep = ""))
+
+#compare and filter --> now all the columns fulfill A-->B, B-->C and A-->C
+triangles_g<-triangles_g%>%
+  filter(AtoC %in% votings2$Atoc)
+
+#adding the vote and timestamp for A-->C now I have all required information in "triangles_g"
+triangles_g<-left_join(triangles_g,votings,c("user"="user","candidate.y"="candidate"))
+
+#time to delete + rename columns and filter by timestamp
+triangles_g<-triangles_g[-c(5,9,10,13)]       #remove "set" and new col created
+colnames(triangles_g)<-c("userA","userB","timestampAB", "voteAB","userC","timestampBC","voteBC", "timestampAC","voteAC")
+triangles_g<-triangles_g%>%                   #filter by timestamp
+  filter(timestampAB<timestampBC,timestampBC<timestampAC)
+triangles_g<-triangles_g%>%                   #also filter zeros in votings
+  filter(voteAB!=0,voteBC!=0,voteAC!=0)
+
+
+#Around 236K triangles fulfill all the conditions --> these are the ones to check whether the 3 sentences are statistically true:
+#create new column "statement" with the condition "pp", "pn","np" and "nn" (if not one of the 3 sentences: friend of my friend)
+triangles_g<-triangles_g%>%
+  mutate(statement=ifelse(voteAB==1,ifelse(voteBC==1,"pp","pn"),ifelse(voteBC==1,"np","nn")))
+
+#create a new column "expectedAC" with the expected result of AC, that can be obtained by multiplying A-->B and B-->C
+triangles_g<-triangles_g%>%
+  mutate(expectedAC=voteAB*voteBC)
+triangles_g<-triangles_g%>%
+  mutate(sameAC=ifelse(voteAC==expectedAC,1,0))
+#"expectedAC" should be equal to "voteAC", we can evaluate the % of ocurrences where it holds for every statement
+check_statements<-triangles_g%>%
+  group_by(statement)%>%
+  summarize(count=n(),count_true=sum(sameAC))
+check_statements<-check_statements%>%
+  mutate(percentage=count_true/count)
+
+View(check_statements)
 ```
 
 ### Link Sign Prediction (temporal structure)
