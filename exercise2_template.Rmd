@@ -370,7 +370,7 @@ triangles_g<-triangles_g%>%                   #filter by timestamp
   filter(timestampAB<timestampBC,timestampBC<timestampAC)
 triangles_g<-triangles_g%>%                   #also filter zeros in votings
   filter(voteAB!=0,voteBC!=0,voteAC!=0)
-
+votings2<-votings2[-c(6)]
 
 #Around 236K triangles fulfill all the conditions --> these are the ones to check whether the 3 sentences are statistically true:
 #create new column "statement" with the condition "pp", "pn","np" and "nn" (if not one of the 3 sentences: friend of my friend)
