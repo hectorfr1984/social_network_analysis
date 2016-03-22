@@ -1,0 +1,645 @@
+---
+title: "Assignment 2"
+author: "Social Networks Analysis - Master in Business Analytics & Big Data"
+date: "February 25th 2016"
+output: html_document
+---
+
+### Introduction
+
+Wikipedia is a free encyclopedia written collaboratively by volunteers around the world. A small part of Wikipedia contributors are administrators, who are users with access to additional technical features that aid in maintenance. In order for a user to become an administrator a Request for adminship (RfA) is issued and the Wikipedia community via a public discussion or a vote decides who to promote to adminship. Using a complete dump of Wikipedia page edit history (from January 3 2008) we extracted all administrator elections and vote history data. This gave us nearly 2,800 elections with around 100,000 total votes and about 7,000 users participating in the elections (either casting a vote or being voted on). Out of these 1,200 elections resulted in a successful promotion, while about 1,500 elections did not result in the promotion. About half of the votes in the dataset are by existing admins, while the other half comes from ordinary Wikipedia users.
+
+<span style="color:blue">
+The answers in every section, please code it in blue
+</span>
+
+
+### Assignment 2
+
+In this exercise, you will learn some advanced uses of the Igraph package, a powerful tool to analyze and visualize networks in R. This is an assignment with a smaller number of clues compared to the first assignment so you will have to be creative and think of different solutions.
+
+In this case, we have a big goal to get in this assignment:
+
+#### Sign prediction
+
+* Can we predict the sign of the votes depending on the structure?
+* Can we predict the sign of the votes depending on the previous information?
+* Can we measure the effect "the friend of my friend is my friend", "the friend of my enemy is my enemy" and "the enemy of my friend is my enemy"?
+
+It is useful to read and understand the next paper: http://cs.stanford.edu/people/jure/pubs/signs-www10.pdf
+
+In this scientific paper you will see the results the authors got when they analyzed the Wikipedia dataset. 
+
+### Link Sign Prediction (no temporal structure)
+
+In this exercise, we will try to predict the sign of votes. We will use a logistic regression for predicting this sign based on variables we can compute from our graph.
+
+In our first exercise, we will choose randomly 80% of the original edges (training dataset) and our goal is to create a predictive model for the rest 20% of the edges (test dataset). 
+
+```{r, echo=F, include=F}
+#loading some libraries
+library(igraph)
+library(ggplot2)
+library(dplyr)
+library(plotrix)
+library(dplyr)
+library(GGally)
+library(pROC)
+library(xtable)
+library(knitr)
+```
+
+```{r, echo=F, include=F}
+setwd("/home/ab/Documents/MBD/social_network/data")
+#setwd("~/2.IE/Term 2 - Winter/Social Network Analysis/Exercise2")
+# load raw data files
+metadata = read.csv("metadata.txt",sep=";",stringsAsFactors = F,header=F,quote="")
+# setting headers
+colnames(metadata)=c("user","nominator","deadline","result")
+head(metadata,10)
+# load raw data files
+votings<-read.csv("votings.txt",sep=";",stringsAsFactors = F,header=F,quote="")
+# setting headers
+colnames(votings)<-c("user","candidate","datetime","vote")
+head(votings,5)
+```
+
+<span style="color:blue">
+To create the training and test datasets, we randomly assign a new edge attribute to the data.
+This process randomly assigns a 1 or 2 to each edge,
+with an 80% probability of an edge being assigned 1
+and a 20% probability of an edge being assigned 2.
+</span>
+
+```{r}
+set.seed(11)
+rand = sample(2, 114040, prob = c(0.8, 0.2), replace = T)
+votings$set = rand
+```
+
+```{r}
+#setting the original graph
+g<-as.matrix(votings)
+g<-graph_from_edgelist(g[,1:2])
+g<-set.edge.attribute(g,"vote",value=votings[,4])
+g<-set.edge.attribute(g,"timestamp",value=votings[,3])
+g<-set.edge.attribute(g,"set",value=votings[,5])
+summary(g)
+```
+
+<span style="color:blue">
+To create the training dataset, we remove the edges that were assigned 2. This leaves all nodes but keeps only training edges.
+To create the test dataset, we remove the edges that were assigned 1. This leaves all nodes but keeps only test edges.
+</span>
+```{r}
+# CHUNK 1: code to split the original datasets in two training_edges and test_edges
+gtrain<-delete.edges(g,which(E(g)$set !=1))
+gtest<-delete.edges(g,which(E(g)$set !=2))
+```
+
+<span style="color:blue">
+At this stage, we also remove edges with no votes.
+</span>
+```{r}
+gtrain<-delete.edges(gtrain, which(E(gtrain)$vote==0))
+gtest<-delete.edges(gtest,which(E(gtest)$vote==0))
+```
+
+Then, we must create the variables for each edge (both training and test ones). These are some mandatory variables but you can add more. If every link is composed by an origin u and a destination v:
+* In, out and total positive degree (degree involving only positive links) for both nodes.
+* In, out and total negative degree (degree involving only negative links) for both nodes.
+
+<span style="color:blue">
+We now create the positive and negative In, Out and All degrees for the training set.
+These degrees are then assigned to their nodes as an attribute.
+</span>
+```{r, echo=F}
+# CHUNK 2: Code to create these variables for the edges.
+degree_in = degree(gtrain,v=V(gtrain), mode = "in")
+degree_out = degree(gtrain,v = V(gtrain), mode = "out")
+degree_all = degree(gtrain,v = V(gtrain), mode = "all")
+
+#only positive edges and compute degree
+gtrainp<-delete.edges(gtrain,which(E(gtrain)$vote <0))
+degree_in_p = degree(gtrainp, mode = "in")
+degree_out_p = degree(gtrainp, mode = "out")
+degree_all_p = degree(gtrainp, mode = "all")
+
+#only negative edges and compute degree
+gtrainn<-delete.edges(gtrain,which(E(gtrain)$vote >0))
+degree_in_n = degree(gtrainn, mode = "in")
+degree_out_n = degree(gtrainn, mode = "out")
+degree_all_n = degree(gtrainn, mode = "all")
+
+#set as new vertex attributes (for building the vertex data frame later)
+gtrain<-set.vertex.attribute(gtrain,"d_in_p",value=degree_in_p)
+gtrain<-set.vertex.attribute(gtrain,"d_out_p",value=degree_out_p)
+gtrain<-set.vertex.attribute(gtrain,"d_tot_p",value=degree_all_p)
+gtrain<-set.vertex.attribute(gtrain,"d_in_n",value=degree_in_n)
+gtrain<-set.vertex.attribute(gtrain,"d_out_n",value=degree_out_n)
+gtrain<-set.vertex.attribute(gtrain,"d_tot_n",value=degree_all_n)
+
+summary(gtrain)
+```
+
+<span style="color:blue">
+We now create the positive and negative In, Out and All degrees for the test set.
+These degrees are then assigned to their nodes as an attribute.
+</span>
+```{r, echo=F}
+# CHUNK 2: Code to create these variables for the edges.
+degree_in = degree(gtest,v=V(gtest), mode = "in")
+degree_out = degree(gtest,v = V(gtest), mode = "out")
+degree_all = degree(gtest,v = V(gtest), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtestp<-delete.edges(gtest,which(E(gtest)$vote <0))
+degree_in_p = degree(gtestp, mode = "in")
+degree_out_p = degree(gtestp, mode = "out")
+degree_all_p = degree(gtestp, mode = "all")
+
+#only negative edges and compute degree
+gtestn<-delete.edges(gtest,which(E(gtest)$vote >0))
+degree_in_n = degree(gtestn, mode = "in")
+degree_out_n = degree(gtestn, mode = "out")
+degree_all_n = degree(gtestn, mode = "all")
+
+?degree
+#stupid check for positive + negative = total votes
+# summary(gtest)
+# summary(gtrainp)
+# summary(gtrainn)
+
+#set new vertex attributes
+gtest<-set.vertex.attribute(gtest,"d_in_p",value=degree_in_p)
+gtest<-set.vertex.attribute(gtest,"d_out_p",value=degree_out_p)
+gtest<-set.vertex.attribute(gtest,"d_tot_p",value=degree_all_p)
+gtest<-set.vertex.attribute(gtest,"d_in_n",value=degree_in_n)
+gtest<-set.vertex.attribute(gtest,"d_out_n",value=degree_out_n)
+gtest<-set.vertex.attribute(gtest,"d_tot_n",value=degree_all_n)
+summary(gtest)
+```
+
+
+<span style="color:blue">
+This chunk creates the dataframes required for the logistic regression model by converting the graph vertices and edges into dataframes. The structure for both sets are identical, as below.
+</span>
+```{r,echo=F}
+train_nodes_df = get.data.frame(gtrain, what = "vertices")
+train_edges_df = get.data.frame(gtrain, what = "edges")
+
+train = left_join(train_edges_df,train_nodes_df,c("from"="name"))
+train = left_join(train,train_nodes_df,c("to"="name"))
+names(train) = c("origin", "destination","vote","timestamp","set","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+test_nodes_df = get.data.frame(gtest, what = "vertices")
+test_edges_df = get.data.frame(gtest, what = "edges")
+test = left_join(test_edges_df,test_nodes_df,c("from"="name"))
+test = left_join(test,test_nodes_df,c("to"="name"))
+names(test) = c("origin", "destination","vote","timestamp","set","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+kable(head(train,3), format = "markdown")
+
+```
+
+Finally, we build a logistic regression model with the training dataset and we evaluate it on the test dataset.
+
+<span style="color:blue">
+Building the logistic regression model requires iterations to find the right model.
+The first model is summarised below. The summary indicates that there are some variables that are not important
+</span>
+
+<span style="color:blue">
+A few variables (DallP,DallN,OallP and OallN) are identified as being possibly correlated and the model has omitted them.This is probably because they are the values for total degree, which are made up of their respective in and out degrees. One variable, DoutN, is deemed to not be significantly different from 0. The output below shows the coefficients for the model.  
+</span>
+```{r,echo= F}
+# CHUNK 3: code to create the regression model and evaluate it on the test.
+train$vote = ifelse(train$vote == -1,0,1)
+test$vote = ifelse(test$vote == -1,0,1)
+
+model<- glm(data=train, family=binomial(logit), vote~ DinP + DoutP + DallP + DinN + DoutN + DallN + OinP + OoutP + OallP + OinN + OoutN + OallN)# . is to compute all variables against Y
+coef(model)
+```
+
+<span style="color:blue">
+The final model is below. While it is not significantly different from the first model with all variables (as seen in Analysis of Deviance Table), removing variables make it easier to interpret. 
+</span>
+```{r,echo=F}
+model1<- glm(data=train, family=binomial(logit), vote ~ DinP + DoutP  + DinN + DoutN + OinP  + OoutP + OinN + OoutN)# . is to compute all variables against Y
+coef(model1)
+anova(model, model1, test = "Chisq")
+```
+
+
+```{r,echo=F}
+model_pred1 = predict(model1,newdata = test, type="response")
+test$prob1 = model_pred1
+test$pred1 = ifelse(test$prob1 >.5,1,0)
+```
+
+<span style="color:blue">
+Looking at the success rate, the model correctly predicted 80% of signs.
+</span>
+
+```{r,echo=F}
+#Overall Success 
+table(test$vote,test$pred1)
+mean(test$vote == test$pred)
+```
+
+<span style="color:blue">
+True Positives were 80% accurate.
+</span>
+```{r, echo=F}
+#True Positives
+table(test$vote,test$pred)[2,2] / sum(table(test$vote,test$pred)[,2]) *100
+```
+<span style="color:blue">
+True Negatives were 75% accurate.
+</span>
+```{r, echo=F}
+#True Negatives
+table(test$vote,test$pred)[1,1] / sum(table(test$vote,test$pred)[,1]) *100
+```
+
+
+Analyze the weights of the regression provided by the model. Which variables are the most important ones to predict the sign??
+
+<span style="color:blue">
+The first observation we see is that an increase in negative degrees (in either the origin or destination nodes) decreases the likelihood of the sign being positive. The opposite is true for positive degrees.
+</span>
+
+<span style="color:blue">
+The the most important variable for predicting a positive vote is the In Degree for the Destination node. That is, when the node being voting for had a high positive degree, this indicates a higher likelihood of the vote being successful. Previous success is a good indication for future success.
+</span>
+
+<span style="color:blue">
+On the contrary, if the voter has a high negative out degree, then they are more likely to vote negatively. Haters will be haters.
+</span>
+
+### Evaluating social hypothesis on the Wikipedia network.
+
+In this exercise we will try to evaluate whether these three sentences are statistically true in our dataset:
+
+* "The friend of my friend is my friend"
+* "The friend of my enemy is my enemy"
+* "The enemy of my friend is my enemy"
+
+In this exercise, we will consider all the links of the original dataset. The main goal is to check these affirmations considering both the sign of the links and the timestamp. 
+
+<span style="color:blue">
+In order to compute the three sentences, we need to have a look at closed triangles. If  three nodes A, B and C form a triangle in the directed graph connected in this fashion: A ---> B, B ---> C and A ---> C then we can get from A to C either in one step or two. 
+Getting from A to C through B provides the first part of the statements:
+"the friend of my friend..."
+"the friend of my enemy..."
+"the enemy of my friend..."
+While getting from A to C directly provides the last part: "... my friend" or "my enemy". 
+</span>
+
+<span style="color:blue">
+In order to do that a data frame is created with all the triangles that fulfill this type of connection, with the sign of the votes and timestamps. The data frame will take time into consideration having A--> B occurring before B-->C and both votes happening before A-->C. That is a requirement as A's vote for C is affected by how B has reacted to being voted by A and how B casted the vote for C. Zeroes are also taken away as we will compute positive and negative votes only.
+</span>
+
+<span style="color:blue">
+In the final data set we can add a new column to compute the expected result of our sentences:
+- IF A-->B "positive" and B-->C "positive" THEN A-->C "positive"
+- IF A-->B "negative" and B-->C "positive" THEN A-->C "negative"
+- IF A-->B "positive" and B-->C "negative" THEN A-->C "negative"
+And now we can compare the values of the votes casted and the expected values to check if the sentences are statistically true or not.
+</span>
+
+```{r}
+# CHUNK 4: create the code and visualizations you consider to evaluate these 3 affirmations
+
+#Doing a left join of "votings" with itself so I get A --> B and B --> C to get neighbourhood of length 2
+triangles_g<-left_join(votings,votings,c("candidate"="user"))
+
+#Now filter for A-->C, meaning that "C" has to appear in column 2 for voters "A"
+#create a new column concatenating names of A and C to compare with votings
+triangles_g$AtoC <- do.call(paste, c(triangles_g[c("user", "candidate.y")], sep = ""))
+#create same column in votings
+votings2<-votings
+votings2$Atoc<-do.call(paste, c(votings2[c("user", "candidate")], sep = ""))
+#compare and filter --> now all the columns fulfill A-->B, B-->C and A-->C
+triangles_g<-triangles_g%>%filter(AtoC %in% votings2$Atoc)
+#adding the vote and timestamp for A-->C now I have all required information in "triangles_g"
+triangles_g<-left_join(triangles_g,votings,c("user"="user","candidate.y"="candidate"))
+#time to delete + rename columns and filter by timestamp
+triangles_g<-triangles_g[-c(5,9,10,13)]       #remove "set" and new col created
+colnames(triangles_g)<-c("userA","userB","timestampAB", "voteAB","userC","timestampBC","voteBC", "timestampAC","voteAC")
+triangles_g<-triangles_g%>%                   #filter by timestamp
+  filter(timestampAB<timestampBC,timestampBC<timestampAC)
+triangles_g<-triangles_g%>%                   #also filter zeros in votings
+  filter(voteAB!=0,voteBC!=0,voteAC!=0)
+votings2<-votings2[-c(6)]
+
+#Around 236K triangles fulfill all the conditions --> these are the ones to check whether the 3 sentences are statistically true:
+#create new column "statement" with the condition "pp", "pn","np" and "nn" (if not one of the 3 sentences: friend of my friend)
+triangles_g<-triangles_g%>%
+  mutate(statement=ifelse(voteAB==1,ifelse(voteBC==1,"pp","pn"),ifelse(voteBC==1,"np","nn")))
+#create a new column "expectedAC" with the expected result of AC, that can be obtained by multiplying A-->B and B-->C
+triangles_g<-triangles_g%>%
+  mutate(expectedAC=voteAB*voteBC)
+triangles_g<-triangles_g%>%
+  mutate(sameAC=ifelse(voteAC==expectedAC,1,0))
+#"expectedAC" should be equal to "voteAC", we can evaluate the % of ocurrences where it holds for every statement
+check_statements<-triangles_g%>%
+  group_by(statement)%>%
+  summarize(count=n(),count_true=sum(sameAC))
+check_statements<-check_statements%>%
+  mutate(percentage=count_true/count)
+
+kable(head(triangles_g,3), format = "markdown")
+
+check_statements
+```
+
+
+
+<span style="color:blue">
+We can use the information obtained in this chunk to add columns to the "votings" dataset with these properties, so when the graph is constructed the "pp", "pn", "np" and "nn" properties can be directly assigned to the edges just like votes and timestamps are (instead of doing it in chunk 6)
+</span>
+
+```{r}
+#Visualizations --> assign to edges
+#This part will also be useful for chunk6 --> assign properties to edges (done in chunk 5 for these properties)
+
+#the friend of my friend
+votings_pp <- triangles_g %>% filter(statement=="pp")%>% group_by(userA,userC)%>% summarise(count=n())
+#the enemy of my friend
+votings_np <- triangles_g%>%filter(statement=="np")%>%group_by(userA,userC)%>%summarise(count=n())
+#the friend of my enemy
+votings_pn <- triangles_g%>%filter(statement=="pn")%>%group_by(userA,userC)%>%summarise(count=n())
+#the enemy of my enemy
+votings_nn <- triangles_g%>%filter(statement=="nn")%>%group_by(userA,userC)%>%summarise(count=n())
+
+#add to votings as columns to then include them as properties of the edges
+#adding them
+votings2<-left_join(votings2,votings_pp,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_np,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_pn,c("user"="userA","candidate"="userC"))
+votings2<-left_join(votings2,votings_nn,c("user"="userA","candidate"="userC"))
+#renaming columns
+colnames(votings2)<-c("user","candidate","datetime","vote", "set","countpp","countnp","countpn", "countnn")
+#votings2 data frame with additional information on the edges
+votings2$countpp[is.na(votings2$countpp)]<-0
+votings2$countnp[is.na(votings2$countnp)]<-0
+votings2$countpn[is.na(votings2$countpn)]<-0
+votings2$countnn[is.na(votings2$countnn)]<-0
+```
+
+
+<span style="color:blue">
+The four charts in the panel below show that the number of abovementioned social effects per edge drops very quickly. These effects per edge rarely reaches 5 across the graph. 
+</span>
+```{r}
+par(mfrow=c(2,2))
+plot(density(votings_pp$count), main = "PP Frequency")
+plot(density(votings_pn$count), main = "PN Frequency")
+plot(density(votings_np$count), main = "NP Frequency")
+plot(density(votings_nn$count), main = "NN Frequency")
+```
+
+
+### Link Sign Prediction (temporal structure)
+
+In this exercise, we will try to predict the sign of votes again by using a logistic regression for predicting this sign based on variables we can compute from our graph but, now, we will have different datasets. We will select the training dataset by keeping the 80% of links ordered by time and the rest 20% of links will compose the test dataset.
+
+<span style="color:blue">
+Here the dataset is sorted by timestamp, the first 80% records will conform the train dataset and the remaining 20% records will be the test data set.
+</span>
+```{r}
+# CHUNK 5: create the new training and test datasets.
+
+#NB! Knowing that I will work with the 3 new variables stated before, we will add them already in chunk 5 instead of in chunk 6
+
+#Arrange votings2 by timestamp 
+votings2<-votings2%>%
+  arrange(datetime)
+votings2$set[1:length(votings2$set)*0.8]<-1                         #first 80%: training set, set=1
+votings2$set[(length(votings2$set)*0.8+1):length(votings2$set)]<-2  #last 20%: test set, set=2
+```
+
+<span style="color:blue">
+The following properties are added to the edges at this stage: "vote", "timestamp", "pp", "np", "pn" and "nn" (instead of doing it in chunk 6)
+</span>
+
+```{r}
+
+#create graph assignning to edges the properties "vote", "timestamp", "set", "pp", "np", "pn" and "nn"
+votings2<-as.matrix(votings2)
+g2<-graph_from_edgelist(votings2[,1:2])
+g2<-set.edge.attribute(g2,"vote",value=votings2[,4])
+g2<-set.edge.attribute(g2,"timestamp",value=votings2[,3])
+g2<-set.edge.attribute(g2,"set",value=votings2[,5])
+g2<-set.edge.attribute(g2,"pp",value=votings2[,6])
+g2<-set.edge.attribute(g2,"np",value=votings2[,7])
+g2<-set.edge.attribute(g2,"pn",value=votings2[,8])
+g2<-set.edge.attribute(g2,"nn",value=votings2[,9])
+summary(g2)
+```
+
+
+<span style="color:blue">
+To create the training dataset, we remove the edges that were assigned 2. This leaves all nodes but keeps only training edges. To create the test dataset, we remove the edges that were assigned 1. This leaves all nodes but keeps only test edges.
+</span>
+```{r}
+#Two graphs with all the nodes but only the training and testing edges
+gtrain2<-delete.edges(g2,which(E(g2)$set !=1))  #train data set
+gtest2<-delete.edges(g2,which(E(g2)$set !=2))   #test data set
+```
+
+
+Again, you can create the same degree variables as in the first part of the assignment but now you have to use the knowledge you have got in the second one, that is, if you have observed that the phenomena "the friend of my friend is my friend" is present in the data then you must create some variables related to this fact to predict the sign of the votes.
+
+<span style="color:blue">
+At this stage, we remove edges with no votes.
+</span>
+```{r}
+gtrain2<-delete.edges(gtrain2, which(E(gtrain2)$vote==0))
+gtest2<-delete.edges(gtest2,which(E(gtest2)$vote==0))
+```
+
+
+<span style="color:blue">
+We now create the positive and negative In, Out and All degrees for the training set. These degrees are then assigned to their nodes as an attribute.
+</span>
+```{r, echo=F}
+# CHUNK 6: create the new variables based on the knowledge of how votes spread on the network
+#same as CHUNK 2 for adding the 12 degree variables to the edges (the "statement" variables were added before, chunk 5)
+
+#for the TRAIN data set
+degree_in = degree(gtrain2,v=V(gtrain2), mode = "in")
+degree_out = degree(gtrain2,v = V(gtrain2), mode = "out")
+degree_all = degree(gtrain2,v = V(gtrain2), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtrainp<-delete.edges(gtrain2,which(E(gtrain2)$vote <0))
+degree_in_p = degree(gtrainp, mode = "in")
+degree_out_p = degree(gtrainp, mode = "out")
+degree_all_p = degree(gtrainp, mode = "all")
+
+#only negative edges and compute degree
+gtrainn<-delete.edges(gtrain2,which(E(gtrain2)$vote >0))
+degree_in_n = degree(gtrainn, mode = "in")
+degree_out_n = degree(gtrainn, mode = "out")
+degree_all_n = degree(gtrainn, mode = "all")
+
+#stupid check for positive + negative = total votes
+# summary(gtrain2)
+# summary(gtrainp)
+# summary(gtrainn)
+
+#set as new vertex attributes (for building the vertex data frame later)
+gtrain2<-set.vertex.attribute(gtrain2,"d_in_p",value=degree_in_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_out_p",value=degree_out_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_tot_p",value=degree_all_p)
+gtrain2<-set.vertex.attribute(gtrain2,"d_in_n",value=degree_in_n)
+gtrain2<-set.vertex.attribute(gtrain2,"d_out_n",value=degree_out_n)
+gtrain2<-set.vertex.attribute(gtrain2,"d_tot_n",value=degree_all_n)
+summary(gtrain2)
+```
+
+<span style="color:blue">
+We now create the positive and negative In, Out and All degrees for the test set. These degrees are then assigned to their nodes as an attribute.
+</span>
+```{r,echo = F}
+# now for the test dataset
+
+degree_in = degree(gtest2,v=V(gtest2), mode = "in")
+degree_out = degree(gtest2,v = V(gtest2), mode = "out")
+degree_all = degree(gtest2,v = V(gtest2), mode = "all")
+#out+in = all, seems to add up
+
+#only positive edges and compute degree
+gtestp<-delete.edges(gtest2,which(E(gtest2)$vote <0))
+degree_in_p = degree(gtestp, mode = "in")
+degree_out_p = degree(gtestp, mode = "out")
+degree_all_p = degree(gtestp, mode = "all")
+
+#only negative edges and compute degree
+gtestn<-delete.edges(gtest2,which(E(gtest2)$vote >0))
+degree_in_n = degree(gtestn, mode = "in")
+degree_out_n = degree(gtestn, mode = "out")
+degree_all_n = degree(gtestn, mode = "all")
+
+#set new vertex attributes
+gtest2<-set.vertex.attribute(gtest2,"d_in_p",value=degree_in_p)
+gtest2<-set.vertex.attribute(gtest2,"d_out_p",value=degree_out_p)
+gtest2<-set.vertex.attribute(gtest2,"d_tot_p",value=degree_all_p)
+gtest2<-set.vertex.attribute(gtest2,"d_in_n",value=degree_in_n)
+gtest2<-set.vertex.attribute(gtest2,"d_out_n",value=degree_out_n)
+gtest2<-set.vertex.attribute(gtest2,"d_tot_n",value=degree_all_n)
+summary(gtest2)
+```
+
+
+<span style="color:blue">
+This chunk creates the dataframes required for the logistic regression model by converting the graph vertices and edges into dataframes. The structure for both sets are identical, as below.
+</span>
+```{r,echo=F}
+train_nodes_df2 = get.data.frame(gtrain2, what = "vertices")
+train_edges_df2 = get.data.frame(gtrain2, what = "edges")
+
+train2 = left_join(train_edges_df2,train_nodes_df2,c("from"="name"))
+train2 = left_join(train2,train_nodes_df2,c("to"="name"))
+
+train2$vote = as.numeric(train2$vote)
+train2$pp = as.numeric(train2$pp)
+train2$np = as.numeric(train2$np)
+train2$pn = as.numeric(train2$pn)
+train2$nn = as.numeric(train2$nn)
+names(train2) = c("origin", "destination","vote","timestamp","set","pp","np","pn","nn","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+test_nodes_df2 = get.data.frame(gtest2, what = "vertices")
+test_edges_df2 = get.data.frame(gtest2, what = "edges")
+
+test2 = left_join(test_edges_df2,test_nodes_df2,c("from"="name"))
+test2 = left_join(test2,test_nodes_df2,c("to"="name"))
+names(test2) = c("origin", "destination","vote","timestamp","set","pp","np","pn","nn","OinP","OoutP","OallP","OinN","OoutN","OallN","DinP","DoutP","DallP","DinN","DoutN","DallN")
+
+test2$vote = as.numeric(test2$vote)
+test2$pp = as.numeric(test2$pp)
+test2$np = as.numeric(test2$np)
+test2$pn = as.numeric(test2$pn)
+test2$nn = as.numeric(test2$nn)
+
+kable(head(train2,3), format = "markdown",align = 'l')
+```
+
+
+Once you have all the variables created, you have to train a logistic regression model on the training dataset and evaluate it on the test dataset.
+
+<span style="color:blue">
+As with Chunk 3, building the logistic regression model requires iterations to find the right model.
+Similar to the first iteration in Chunk 3, the algorithm has identified some possible errors with the model.
+<span style="color:blue">
+First, the model has warned us that some of the predictions have a probability of 0 or 1. This indicates that the data or the model have issues and needs to be understood before making decisions with the model.
+</span> 
+<span style="color:blue">
+Secondly, as with the model in Chunk 3, the algorithm has identified Singularities. This is most likely the result of there being correlation between predictors.
+</span> 
+
+<span style="color:blue">
+The first model for Chunk 7 is summarised below. The summary indicates that, as with Chunk 3, all All degrees have singularity issues (reason discussed above). Further, all negative degrees, suffixed in N, have also been omitted.
+</span> 
+
+
+```{r, echo=F}
+#CHUNK 7: build the model and evaluate it on the test dataset.
+
+train2$vote = ifelse(train2$vote == -1,0,1)
+test2$vote = ifelse(test2$vote == -1,0,1)
+
+model7 =  glm(data=train2, family=binomial(logit), vote ~ pp + np + pn + nn + DinP + DoutP + DallP + DinN + DoutN + DallN + OinP + OoutP + OallP + OinN + OoutN + OallN)
+summary(model7)
+
+```
+
+<span style="color:blue">
+Our second model omits the issues mentioned above.
+</span> 
+```{r, echo=F}
+model71<- glm(data=train2, family=binomial(logit), vote ~ pp + np + pn + nn + DinP + DoutP + OinP  + OoutP)
+summary(model71)
+```
+
+
+```{r, echo=F}
+model_pred7 = predict(model71,newdata = test2, type="response")
+test2$prob = model_pred7
+test2$pred = ifelse(test2$prob >.5,1,0)
+```
+
+<span style="color:blue">
+Looking at the success rate, the model correctly predicted 80% of signs.
+</span>
+
+```{r,echo=F}
+table(test2$vote,test2$pred)
+mean(test2$vote == test2$pred)
+```
+
+<span style="color:blue">
+True Positives were 81% accurate.
+</span>
+
+```{r,echo=F}
+table(test2$vote,test2$pred)[2,2] / sum(table(test2$vote,test2$pred)[,2]) *100
+```
+
+<span style="color:blue">
+False Positives were 54% accurate.
+</span>
+```{r,echo=F}
+#True Negatives
+table(test2$vote,test2$pred)[1,1] / sum(table(test2$vote,test2$pred)[,1]) *100
+```
+
+
+Finally, analyze the importance of the variables in the model depending on the weights of the regression.
+<span style="color:blue">
+From the coefficients of our model, we see that the pp (friend of my friend is my friend) condition is the most important variable on the voting sign. This indicates that these triad cliques can be used to determine some aspects of social behaviour with decent accuracy.  This work provides some evidence that cliques may be more important than degree. While the results in this work should not be assumed to hold true in all social networks, it does indicate that small communities within graphs, cannot be ignored as a powerful force of behaviour. Further research would should be done to determine if other centrality measures are important predictors for voting behaviour.
+</span>
+
